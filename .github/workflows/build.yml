@@ -1,0 +1,81 @@
+name: Build APK
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: NDK e CMake
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
+
+      - name: Chiave di firma
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "TRASCRITTORE_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Secret KEYSTORE_BASE64 assente: APK firmato con una chiave di debug temporanea (non aggiornabile sopra versioni precedenti)."
+          fi
+
+      - name: Versione
+        run: |
+          echo "TRASCRITTORE_VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "TRASCRITTORE_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "TRASCRITTORE_VERSION_NAME=1.1-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Compila
+        env:
+          TRASCRITTORE_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          TRASCRITTORE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          TRASCRITTORE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Controlla le librerie native nell'APK
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          unzip -l "$APK" | grep "lib/arm64-v8a/" | tee libs.txt
+          for lib in libtrascrittore.so libwhisper.so libggml.so libggml-base.so \
+                     libggml-cpu-android_armv8.0_1.so libggml-cpu-android_armv8.2_2.so \
+                     libggml-cpu-android_armv8.6_1.so; do
+            grep -q "lib/arm64-v8a/$lib" libs.txt || { echo "::error::Manca $lib nell'APK"; exit 1; }
+          done
+          mkdir -p dist
+          cp "$APK" "dist/Trascrittore-${TRASCRITTORE_VERSION_NAME}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Trascrittore-${{ env.TRASCRITTORE_VERSION_NAME }}
+          path: dist/*.apk
+
+      - name: Pubblica la release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
+          generate_release_notes: true

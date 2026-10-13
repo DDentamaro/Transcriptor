@@ -8,7 +8,14 @@ import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
 
-data class ModelInfo(val id: String, val label: String, val fileName: String, val approxMb: Int)
+data class ModelInfo(
+    val id: String,
+    val label: String,
+    val fileName: String,
+    val approxMb: Int,
+    /** I modelli "turbo" non sono addestrati per tradurre: ignorerebbero l'opzione. */
+    val canTranslate: Boolean = true
+)
 
 object Models {
     const val CUSTOM_ID = "custom"
@@ -16,7 +23,7 @@ object Models {
     val list = listOf(
         ModelInfo("base", "Base: veloce, qualità discreta (~60 MB)", "ggml-base-q5_1.bin", 60),
         ModelInfo("small", "Small: consigliato (~190 MB)", "ggml-small-q5_1.bin", 190),
-        ModelInfo("turbo", "Large v3 Turbo: il migliore, molto lento (~550 MB)", "ggml-large-v3-turbo-q5_0.bin", 550),
+        ModelInfo("turbo", "Large v3 Turbo: il migliore, molto lento (~550 MB)", "ggml-large-v3-turbo-q5_0.bin", 550, canTranslate = false),
         ModelInfo(CUSTOM_ID, "Importa un tuo file .bin", "custom.bin", 0)
     )
 
@@ -98,11 +105,25 @@ object Models {
                     if (total > 0 && done != total) throw Exception("Download incompleto, riprova per riprendere")
                 }
             }
+            if (!hasGgmlMagic(part)) {
+                part.delete()
+                throw Exception("Il file scaricato non è un modello valido, riprova")
+            }
             if (target.exists()) target.delete()
             if (!part.renameTo(target)) throw Exception("Impossibile salvare il modello")
         } finally {
             conn.disconnect()
         }
+    }
+
+    /** I modelli ggml iniziano con il numero magico 0x67676d6c ("lmgg" su disco). */
+    private fun hasGgmlMagic(f: File): Boolean = try {
+        val b = ByteArray(4)
+        f.inputStream().use { it.read(b) } == 4 &&
+            b[0] == 'l'.code.toByte() && b[1] == 'm'.code.toByte() &&
+            b[2] == 'g'.code.toByte() && b[3] == 'g'.code.toByte()
+    } catch (_: Exception) {
+        false
     }
 
     /** Copia un modello .bin scelto dall'utente nella cartella privata dell'app. */
@@ -112,11 +133,11 @@ object Models {
         ctx.contentResolver.openInputStream(uri)?.use { input ->
             FileOutputStream(tmp).use { out -> input.copyTo(out, 1 shl 16) }
         } ?: throw Exception("Impossibile leggere il file")
-        if (tmp.length() < 1_000_000) {
+        if (tmp.length() < 1_000_000 || !hasGgmlMagic(tmp)) {
             tmp.delete()
-            throw Exception("Il file è troppo piccolo per essere un modello Whisper")
+            throw Exception("Il file non è un modello Whisper in formato ggml (.bin)")
         }
         if (target.exists()) target.delete()
-        tmp.renameTo(target)
+        if (!tmp.renameTo(target)) throw Exception("Impossibile salvare il modello")
     }
 }

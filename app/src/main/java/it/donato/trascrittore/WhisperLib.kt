@@ -17,14 +17,19 @@ object WhisperLib {
     const val RESULT_OK = 0
     const val RESULT_ABORTED = 1
 
+    /** Carica la variante del backend CPU adatta al processore. Da chiamare prima di [nativeInit]. */
+    external fun nativeLoadBackends(nativeLibDir: String): Boolean
     external fun nativeInit(modelPath: String): Long
     external fun nativeFree(ctx: Long)
     external fun nativeSetAbort(value: Boolean)
     external fun nativeSystemInfo(): String
+    /** Codice della lingua usata nell'ultima trascrizione (rilevata, se era "auto"). */
+    external fun nativeDetectedLanguage(ctx: Long): String
     external fun nativeTranscribe(
         ctx: Long,
         samples: FloatArray,
         language: String,
+        prompt: String,
         translate: Boolean,
         threads: Int,
         listener: TranscribeListener

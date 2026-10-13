@@ -39,6 +39,7 @@ class TranscriptionService : Service() {
         private const val CHUNK_SAMPLES = 300L * RATE      // 5 minuti
         private const val SEARCH_SAMPLES = 10L * RATE      // cerca il silenzio negli ultimi 10 s
         private const val FRAME = 400                      // 25 ms
+        private const val PROMPT_CHARS = 200               // contesto passato al blocco successivo
 
         @Volatile private var cancelRequested = false
 
@@ -64,6 +65,7 @@ class TranscriptionService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastNotifiedPct = -1
     private var lastNotifiedPhase: Phase? = null
+    private var previousText: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -87,6 +89,7 @@ class TranscriptionService : Service() {
         val translate = intent.getBooleanExtra(EXTRA_TRANSLATE, false)
 
         cancelRequested = false
+        previousText = null
         WhisperLib.nativeSetAbort(false)
         AppState.resetForNewJob(name)
         AppState.phase = Phase.DECODING
@@ -114,12 +117,21 @@ class TranscriptionService : Service() {
 
             // 2) Caricamento modello
             setStatus(Phase.LOADING_MODEL, 0f, "Caricamento modello…")
+            if (!WhisperLib.nativeLoadBackends(applicationInfo.nativeLibraryDir)) {
+                throw Exception("Processore non supportato")
+            }
             val ctx = WhisperLib.nativeInit(modelPath)
             if (ctx == 0L) throw Exception("Modello non valido o danneggiato: riscaricalo")
 
             // 3) Trascrizione a blocchi
             val threads = (Runtime.getRuntime().availableProcessors() - 1).coerceIn(1, 4)
             val started = SystemClock.elapsedRealtime()
+            // Con "auto" la lingua si rileva sul primo blocco e poi resta fissa:
+            // rilevarla a ogni blocco la farebbe cambiare a meta video.
+            var language = lang
+            var languageLabel = ""
+            // Coda del testo gia trascritto: tiene il filo tra un blocco e l'altro.
+            val tail = StringBuilder()
             try {
                 RandomAccessFile(pcm, "r").use { raf ->
                     var start = 0L
@@ -140,18 +152,34 @@ class TranscriptionService : Service() {
                                 val eta = if (frac > 0.02f) ((elapsed / frac) * (1 - frac)).toLong() else -1L
                                 val etaLabel = if (eta >= 0) " · mancano ~${Exporter.formatClock(eta)}" else ""
                                 setStatus(Phase.TRANSCRIBING, frac,
-                                    "Trascrizione ${(frac * 100).toInt()}% di $durationLabel$etaLabel")
+                                    "Trascrizione ${(frac * 100).toInt()}% di $durationLabel$languageLabel$etaLabel")
                             }
 
                             override fun onSegment(t0Ms: Long, t1Ms: Long, text: ByteArray) {
-                                AppState.addSegment(Segment(offsetMs + t0Ms, offsetMs + t1Ms, String(text, Charsets.UTF_8)))
+                                val s = String(text, Charsets.UTF_8)
+                                if (TextFilter.isHallucination(s, previousText)) return
+                                previousText = s
+                                AppState.addSegment(Segment(offsetMs + t0Ms, offsetMs + t1Ms, s))
                                 AppState.changed()
+                                if (tail.isNotEmpty()) tail.append(' ')
+                                tail.append(s.trim())
+                                if (tail.length > PROMPT_CHARS) {
+                                    tail.delete(0, tail.length - PROMPT_CHARS)
+                                    tail.delete(0, tail.indexOf(" ") + 1) // niente parole tagliate a meta
+                                }
                             }
                         }
+                        val prompt = tail.toString()
                         listener.onProgress(0)
-                        val rc = WhisperLib.nativeTranscribe(ctx, samples, lang, translate, threads, listener)
+                        val rc = WhisperLib.nativeTranscribe(ctx, samples, language, prompt, translate, threads, listener)
                         if (rc == WhisperLib.RESULT_ABORTED || cancelRequested) throw CancelledException()
                         if (rc != WhisperLib.RESULT_OK) throw Exception("Errore durante la trascrizione (codice $rc)")
+                        if (language == "auto") {
+                            WhisperLib.nativeDetectedLanguage(ctx).takeIf { it.isNotEmpty() }?.let {
+                                language = it
+                                languageLabel = " · lingua: $it"
+                            }
+                        }
                         start = end
                     }
                 }

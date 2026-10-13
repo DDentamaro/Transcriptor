@@ -232,12 +232,6 @@ class MainActivity : Activity() {
             return
         }
         val uri = videoUri ?: return
-        if (!CpuCheck.nativeCompatible()) {
-            Toast.makeText(this,
-                "Questo telefono non supporta le istruzioni fp16. In app/build.gradle.kts metti useFp16 = false e ricompila.",
-                Toast.LENGTH_LONG).show()
-            return
-        }
         val m = selectedModel()
         if (!Models.isReady(this, m)) {
             Toast.makeText(this, "Prima scarica o importa il modello", Toast.LENGTH_SHORT).show()
@@ -246,7 +240,8 @@ class MainActivity : Activity() {
         val lang = languages[spLang.selectedItemPosition.coerceAtLeast(0)].first
         shownSegments = 0
         txtTranscript.text = ""
-        TranscriptionService.start(this, uri, videoName, Models.file(this, m).path, lang, chkTranslate.isChecked)
+        TranscriptionService.start(this, uri, videoName, Models.file(this, m).path, lang,
+            chkTranslate.isChecked && m.canTranslate)
     }
 
     private fun transcriptText(): String = Exporter.toPlainText(AppState.allSegments())
@@ -323,7 +318,8 @@ class MainActivity : Activity() {
         txtVideo.text = if (videoUri != null) videoName else "Nessun video scelto"
         btnPick.isEnabled = !running
         spLang.isEnabled = !running
-        chkTranslate.isEnabled = !running
+        chkTranslate.isEnabled = !running && m.canTranslate
+        chkTranslate.text = if (m.canTranslate) "Traduci in inglese" else "Traduci in inglese (non con questo modello)"
 
         // Avvio / annulla
         if (running) {

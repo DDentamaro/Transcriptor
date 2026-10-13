@@ -4,6 +4,7 @@
 #include <cstring>
 #include <string>
 
+#include "ggml-backend.h"
 #include "whisper.h"
 
 #ifdef __ANDROID__
@@ -18,6 +19,7 @@
 #endif
 
 static std::atomic<bool> g_abort{false};
+static std::atomic<bool> g_backends_loaded{false};
 
 namespace {
 
@@ -72,6 +74,24 @@ bool abort_cb(void *) {
 
 extern "C" {
 
+// Carica la variante del backend CPU piu veloce per questo processore
+// (libggml-cpu-android_*.so nella cartella delle librerie native dell'app).
+// Ritorna false se non e stato trovato nessun backend utilizzabile.
+JNIEXPORT jboolean JNICALL
+Java_it_donato_trascrittore_WhisperLib_nativeLoadBackends(JNIEnv *env, jobject, jstring jdir) {
+    if (!g_backends_loaded.load()) {
+        whisper_log_set(log_cb, nullptr);
+        const char *dir = env->GetStringUTFChars(jdir, nullptr);
+        ggml_backend_load_all_from_path(dir);
+        env->ReleaseStringUTFChars(jdir, dir);
+        g_backends_loaded.store(true);
+    }
+    const bool ok = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU) != nullptr;
+    if (ok) LOGI("%s", whisper_print_system_info());
+    else LOGE("Nessun backend CPU caricato");
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jlong JNICALL
 Java_it_donato_trascrittore_WhisperLib_nativeInit(JNIEnv *env, jobject, jstring jpath) {
     whisper_log_set(log_cb, nullptr);
@@ -99,11 +119,22 @@ Java_it_donato_trascrittore_WhisperLib_nativeSystemInfo(JNIEnv *env, jobject) {
     return env->NewStringUTF(whisper_print_system_info());
 }
 
+// Lingua usata nell'ultima trascrizione (quella rilevata, se era "auto").
+JNIEXPORT jstring JNICALL
+Java_it_donato_trascrittore_WhisperLib_nativeDetectedLanguage(JNIEnv *env, jobject, jlong ptr) {
+    auto *ctx = reinterpret_cast<whisper_context *>(ptr);
+    const int id = ctx ? whisper_full_lang_id(ctx) : -1;
+    const char *lang = id >= 0 ? whisper_lang_str(id) : nullptr;
+    return env->NewStringUTF(lang ? lang : "");
+}
+
 // Ritorna 0 se ok, 1 se interrotto, altro valore in caso di errore.
+// prompt: coda del testo del blocco precedente, per non perdere il filo
+// (nomi, stile, punteggiatura) quando si passa da un blocco all'altro.
 JNIEXPORT jint JNICALL
 Java_it_donato_trascrittore_WhisperLib_nativeTranscribe(
         JNIEnv *env, jobject,
-        jlong ptr, jfloatArray jsamples, jstring jlang,
+        jlong ptr, jfloatArray jsamples, jstring jlang, jstring jprompt,
         jboolean translate, jint threads, jobject listener) {
 
     auto *ctx = reinterpret_cast<whisper_context *>(ptr);
@@ -122,6 +153,10 @@ Java_it_donato_trascrittore_WhisperLib_nativeTranscribe(
     std::string language(lang);
     env->ReleaseStringUTFChars(jlang, lang);
 
+    const char *pr = env->GetStringUTFChars(jprompt, nullptr);
+    std::string prompt(pr);
+    env->ReleaseStringUTFChars(jprompt, pr);
+
     whisper_full_params p = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     p.n_threads = threads > 0 ? threads : 4;
     p.language = language.c_str();
@@ -132,6 +167,10 @@ Java_it_donato_trascrittore_WhisperLib_nativeTranscribe(
     p.print_special = false;
     p.print_timestamps = false;
     p.suppress_blank = true;
+    // Niente token "non parlato" (musica, applausi...): riduce le frasi
+    // inventate nei tratti senza voce.
+    p.suppress_nst = true;
+    p.initial_prompt = prompt.empty() ? nullptr : prompt.c_str();
     p.progress_callback = progress_cb;
     p.progress_callback_user_data = &cb;
     p.new_segment_callback = segment_cb;

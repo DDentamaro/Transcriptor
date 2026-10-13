@@ -3,6 +3,15 @@
 App Android che trascrive l'audio di un video in testo, **offline**, con Whisper (whisper.cpp).
 Pensata anche per video lunghi: lavora a blocchi in background, con lo schermo spento.
 
+## Scaricare l'APK già pronto
+
+Ogni versione pubblicata è nella pagina **Releases** del repository GitHub:
+scarica `Trascrittore-x.y.apk` sul telefono e aprilo per installarlo
+(la prima volta Android chiede di consentire l'installazione da quella app).
+
+Ogni push compila anche un APK di prova: lo trovi in *Actions → Build APK →*
+l'ultima esecuzione *→ Artifacts*.
+
 ## Come compilarla (una volta sola, sul PC)
 
 1. Installa **Android Studio** (versione recente).
@@ -18,10 +27,9 @@ In alternativa: *Build → Build App Bundle(s) / APK(s) → Build APK(s)*, poi c
 
 Serve un telefono **a 64 bit** (arm64). L'emulatore x86 non è supportato.
 
-Per andare più veloce, l'app è compilata con le istruzioni **ARMv8.2 fp16**, presenti nei
-telefoni dal 2018 circa in poi (Snapdragon 845+, Dimensity, Exynos/Tensor recenti).
-Se il tuo telefono è più vecchio, l'app te lo dice quando premi Avvia: apri
-`app/build.gradle.kts`, metti `val useFp16 = false` e ricompila. Funzionerà, solo più lenta.
+L'app contiene più versioni del motore di calcolo (ARMv8.0, dotprod, fp16, i8mm,
+SVE2, SME) e all'avvio usa la più veloce che il processore supporta: funziona su
+qualsiasi telefono a 64 bit senza ricompilare, e i telefoni recenti vanno più veloci.
 
 ## Come si usa
 
@@ -32,8 +40,10 @@ Se il tuo telefono è più vecchio, l'app te lo dice quando premi Avvia: apri
    - **Importa file .bin**: per usare un modello ggml già scaricato
      (da huggingface.co/ggerganov/whisper.cpp).
 2. Scegli la lingua (o "Rileva automaticamente").
+   Con "Rileva automaticamente" la lingua viene riconosciuta sui primi minuti
+   e poi resta fissa per tutto il video.
    "Traduci in inglese" produce direttamente il testo in inglese
-   (funziona con Base e Small; il modello Turbo non sa tradurre).
+   (funziona con Base e Small; con Turbo l'opzione è disattivata perché non sa tradurre).
 3. **Scegli video**, oppure dalla galleria usa *Condividi → Trascrittore*.
 4. **Avvia trascrizione**. Puoi uscire dall'app o spegnere lo schermo:
    la notifica mostra l'avanzamento e ha il tasto Annulla.
@@ -56,9 +66,36 @@ con *Small*. Il telefono si scalda: meglio tenerlo in carica per i video lunghi.
   converte in 16 kHz mono su un file temporaneo, senza caricare tutto in memoria.
 - `TranscriptionService.kt`: servizio in primo piano con wake lock; divide l'audio
   in blocchi da 5 minuti tagliati nel punto più silenzioso, così non spezza le parole.
+  La fine di ogni blocco viene passata a Whisper come contesto del blocco successivo
+  (nomi e stile restano coerenti).
+- `TextFilter.kt`: scarta le frasi che Whisper "inventa" nei silenzi
+  (es. "Sottotitoli creati dalla comunità Amara.org") e le ripetizioni in loop.
 - `cpp/jni_bridge.cpp`: collega Kotlin a whisper.cpp (avanzamento, segmenti, annulla).
 - `cpp/whisper.cpp/`: sorgenti di whisper.cpp 1.8.5 (licenza MIT, vedi `LICENSE`),
   inclusi senza i backend GPU che non servono qui.
+
+## Firma e aggiornamenti (GitHub Actions)
+
+Per installare una nuova versione sopra la vecchia, tutti gli APK devono essere
+firmati con la stessa chiave. Una volta sola:
+
+1. Crea la chiave (sul PC, con Java installato) e **conservala**: se la perdi,
+   per aggiornare dovrai disinstallare l'app.
+   ```
+   keytool -genkeypair -v -keystore trascrittore.jks -alias trascrittore \
+           -keyalg RSA -keysize 4096 -validity 10000
+   base64 -w0 trascrittore.jks > trascrittore.jks.b64
+   ```
+2. Nel repository GitHub: *Settings → Secrets and variables → Actions → New repository secret*:
+   - `KEYSTORE_BASE64`: il contenuto di `trascrittore.jks.b64`
+   - `KEYSTORE_PASSWORD` e `KEY_PASSWORD`: le password scelte
+   - `KEY_ALIAS`: `trascrittore`
+
+Senza questi secrets la compilazione funziona lo stesso, ma ogni APK ha una firma
+diversa e va installato dopo aver disinstallato il precedente.
+
+Per pubblicare una versione: crea un tag `v1.2` (per esempio da *Releases → Draft a new
+release*); la compilazione allega l'APK alla release.
 
 ## Se il build fallisce
 

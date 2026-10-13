@@ -3,20 +3,23 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-// true = piu veloce, richiede un telefono ARMv8.2 (circa dal 2018: Snapdragon 845+, ecc.).
-// Se l'app dice che il telefono non e compatibile, metti false e ricompila.
-val useFp16 = true
+// Firma di rilascio: se le variabili d'ambiente sono impostate (in GitHub Actions
+// arrivano dai secrets del repository) l'APK e firmato sempre con la stessa chiave,
+// cosi le nuove versioni si installano sopra le vecchie senza disinstallare.
+// Senza variabili si usa la chiave di debug del PC, come prima.
+val releaseKeystore: String? = System.getenv("TRASCRITTORE_KEYSTORE")?.takeIf { it.isNotBlank() }
 
 android {
     namespace = "it.donato.trascrittore"
     compileSdk = 35
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "it.donato.trascrittore"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = System.getenv("TRASCRITTORE_VERSION_CODE")?.toIntOrNull() ?: 2
+        versionName = System.getenv("TRASCRITTORE_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.1"
 
         // Solo telefoni a 64 bit (praticamente tutti quelli recenti)
         ndk { abiFilters += listOf("arm64-v8a") }
@@ -27,16 +30,29 @@ android {
                 // altrimenti la trascrizione e 10-20 volte piu lenta.
                 arguments += listOf(
                     "-DCMAKE_BUILD_TYPE=Release",
-                    "-DTRASCRITTORE_FP16=" + (if (useFp16) "ON" else "OFF"),
                     "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
                 )
             }
         }
-        buildConfigField("boolean", "NATIVE_FP16", useFp16.toString())
     }
 
-    buildFeatures {
-        buildConfig = true
+    packaging {
+        jniLibs {
+            // ggml cerca le varianti libggml-cpu-*.so elencando la cartella delle
+            // librerie native: devono essere estratte dall'APK all'installazione.
+            useLegacyPackaging = true
+        }
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("TRASCRITTORE_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("TRASCRITTORE_KEY_ALIAS")
+                keyPassword = System.getenv("TRASCRITTORE_KEY_PASSWORD")
+            }
+        }
     }
 
     lint {
@@ -48,8 +64,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Firma di debug: basta per installarla sul proprio telefono
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "release" else "debug")
         }
     }
 
