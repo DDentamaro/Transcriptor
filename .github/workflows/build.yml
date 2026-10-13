@@ -42,11 +42,15 @@ jobs:
 
       - name: Versione
         run: |
+          # Versione di riferimento: il valore predefinito di versionName in app/build.gradle.kts
+          BASE=$(grep -oP 'versionName = .*\?: "\K[^"]+' app/build.gradle.kts)
           echo "TRASCRITTORE_VERSION_CODE=$((100 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             echo "TRASCRITTORE_VERSION_NAME=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
+            echo "TRASCRITTORE_VERSION_NAME=$BASE" >> "$GITHUB_ENV"
           else
-            echo "TRASCRITTORE_VERSION_NAME=1.1-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+            echo "TRASCRITTORE_VERSION_NAME=$BASE-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
           fi
 
       - name: Compila
@@ -73,9 +77,15 @@ jobs:
           name: Trascrittore-${{ env.TRASCRITTORE_VERSION_NAME }}
           path: dist/*.apk
 
+      # Ogni push su main pubblica (o aggiorna) la release v<versionName>.
+      # Per una nuova versione basta aumentare versionName in app/build.gradle.kts.
       - name: Pubblica la release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.TRASCRITTORE_VERSION_NAME }}
+          name: Trascrittore ${{ env.TRASCRITTORE_VERSION_NAME }}
+          target_commitish: ${{ github.sha }}
           files: dist/*.apk
+          overwrite_files: true
           generate_release_notes: true

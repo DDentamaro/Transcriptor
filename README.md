@@ -94,8 +94,9 @@ firmati con la stessa chiave. Una volta sola:
 Senza questi secrets la compilazione funziona lo stesso, ma ogni APK ha una firma
 diversa e va installato dopo aver disinstallato il precedente.
 
-Per pubblicare una versione: crea un tag `v1.2` (per esempio da *Releases → Draft a new
-release*); la compilazione allega l'APK alla release.
+Per pubblicare una versione: aumenta `versionName` in `app/build.gradle.kts`
+(es. `"1.2"`) e porta la modifica su `main`. La compilazione crea la release `v1.2`
+con l'APK allegato. Ogni push su `main` con la stessa versione aggiorna l'APK della release.
 
 ## Se il build fallisce
 
