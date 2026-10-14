@@ -49,6 +49,7 @@ class MainActivity : Activity() {
     private lateinit var btnPick: Button
     private lateinit var txtVideo: TextView
     private lateinit var btnStart: Button
+    private lateinit var btnBench: Button
     private lateinit var progJob: ProgressBar
     private lateinit var txtStatus: TextView
     private lateinit var scroll: ScrollView
@@ -76,6 +77,7 @@ class MainActivity : Activity() {
         btnPick = findViewById<Button>(R.id.btnPick)!!
         txtVideo = findViewById<TextView>(R.id.txtVideo)!!
         btnStart = findViewById<Button>(R.id.btnStart)!!
+        btnBench = findViewById<Button>(R.id.btnBench)!!
         progJob = findViewById<ProgressBar>(R.id.progJob)!!
         txtStatus = findViewById<TextView>(R.id.txtStatus)!!
         scroll = findViewById<ScrollView>(R.id.scroll)!!
@@ -109,6 +111,7 @@ class MainActivity : Activity() {
         btnModel.setOnClickListener { onModelButton() }
         btnPick.setOnClickListener { pickVideo() }
         btnStart.setOnClickListener { onStartButton() }
+        btnBench.setOnClickListener { onBenchButton() }
         btnCopy.setOnClickListener { copyText() }
         btnShare.setOnClickListener { shareText() }
 
@@ -244,7 +247,20 @@ class MainActivity : Activity() {
             chkTranslate.isChecked && m.canTranslate)
     }
 
-    private fun transcriptText(): String = Exporter.toPlainText(AppState.allSegments())
+    private fun onBenchButton() {
+        val uri = videoUri ?: return
+        val ready = Models.list.filter { it.id != Models.CUSTOM_ID && Models.isReady(this, it) }
+        if (ready.isEmpty()) {
+            Toast.makeText(this, "Prima scarica almeno un modello", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val lang = languages[spLang.selectedItemPosition.coerceAtLeast(0)].first
+        txtTranscript.text = ""
+        TranscriptionService.startBenchmark(this, uri, lang, ready)
+    }
+
+    private fun transcriptText(): String =
+        if (AppState.benchmark) AppState.report else Exporter.toPlainText(AppState.allSegments())
 
     private fun copyText() {
         val text = transcriptText()
@@ -257,7 +273,7 @@ class MainActivity : Activity() {
     private fun shareText() {
         val savedUri = AppState.savedTxtUri
         val send = Intent(Intent.ACTION_SEND)
-        if (savedUri != null) {
+        if (savedUri != null && !AppState.benchmark) {
             send.type = "text/plain"
             send.putExtra(Intent.EXTRA_STREAM, savedUri)
             send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -331,6 +347,7 @@ class MainActivity : Activity() {
             btnStart.text = "Avvia trascrizione"
             btnStart.isEnabled = videoUri != null && ready && downloadingId == null
         }
+        btnBench.isEnabled = !running && videoUri != null && downloadingId == null
 
         // Stato
         val phase = AppState.phase
@@ -344,6 +361,16 @@ class MainActivity : Activity() {
         }
         txtStatus.text = if (phase == Phase.IDLE) "" else prefix + AppState.detail
         txtStatus.visibility = if (phase == Phase.IDLE) View.GONE else View.VISIBLE
+
+        // Prova velocita: il pannello mostra il resoconto invece del testo
+        if (AppState.benchmark) {
+            if (txtTranscript.text.toString() != AppState.report) txtTranscript.text = AppState.report
+            shownForFile = ""
+            shownSegments = 0
+            btnCopy.isEnabled = AppState.report.isNotEmpty()
+            btnShare.isEnabled = AppState.report.isNotEmpty()
+            return
+        }
 
         // Testo: aggiunge solo i segmenti nuovi
         if (shownForFile != AppState.fileName || AppState.segmentCount() < shownSegments) {

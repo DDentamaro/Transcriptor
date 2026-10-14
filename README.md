@@ -45,7 +45,10 @@ qualsiasi telefono a 64 bit senza ricompilare, e i telefoni recenti vanno più v
    "Traduci in inglese" produce direttamente il testo in inglese
    (funziona con Base e Small; con Turbo l'opzione è disattivata perché non sa tradurre).
 3. **Scegli video**, oppure dalla galleria usa *Condividi → Trascrittore*.
-4. **Avvia trascrizione**. Puoi uscire dall'app o spegnere lo schermo:
+4. (Facoltativo, una volta) **Prova velocità**: trascrive il primo minuto del video
+   con ogni modello scaricato e con diversi numeri di thread, mostra quanto è veloce
+   il telefono e salva l'impostazione migliore.
+5. **Avvia trascrizione**. Puoi uscire dall'app o spegnere lo schermo:
    la notifica mostra l'avanzamento e ha il tasto Annulla.
 
 Alla fine trovi in **Download/Trascrizioni**:

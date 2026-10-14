@@ -95,14 +95,27 @@
             android:text="Scegli video" />
     </LinearLayout>
 
-    <Button
-        android:id="@+id/btnStart"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:backgroundTint="@color/accent"
-        android:text="Avvia trascrizione"
-        android:textColor="#FFFFFF" />
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnStart"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:backgroundTint="@color/accent"
+            android:text="Avvia trascrizione"
+            android:textColor="#FFFFFF" />
+
+        <Button
+            android:id="@+id/btnBench"
+            style="@style/SmallButton"
+            android:text="Prova velocità" />
+    </LinearLayout>
 
     <ProgressBar
         android:id="@+id/progJob"

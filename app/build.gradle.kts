@@ -18,8 +18,8 @@ android {
         applicationId = "it.donato.trascrittore"
         minSdk = 26
         targetSdk = 34
-        versionCode = System.getenv("TRASCRITTORE_VERSION_CODE")?.toIntOrNull() ?: 2
-        versionName = System.getenv("TRASCRITTORE_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.1"
+        versionCode = System.getenv("TRASCRITTORE_VERSION_CODE")?.toIntOrNull() ?: 3
+        versionName = System.getenv("TRASCRITTORE_VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "1.2"
 
         // Solo telefoni a 64 bit (praticamente tutti quelli recenti)
         ndk { abiFilters += listOf("arm64-v8a") }

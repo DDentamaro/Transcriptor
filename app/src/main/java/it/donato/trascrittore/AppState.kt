@@ -18,6 +18,8 @@ object AppState {
     @Volatile var fileName = ""
     @Volatile var savedLocation = ""     // dove sono stati salvati i file
     @Volatile var savedTxtUri: Uri? = null
+    @Volatile var benchmark = false      // true durante e dopo una prova velocita
+    @Volatile var report = ""            // risultati della prova velocita
     private val segmentList = ArrayList<Segment>()
 
     // --- download modello ---
@@ -37,6 +39,8 @@ object AppState {
         detail = ""
         savedLocation = ""
         savedTxtUri = null
+        benchmark = false
+        report = ""
     }
 
     fun addSegment(s: Segment) {

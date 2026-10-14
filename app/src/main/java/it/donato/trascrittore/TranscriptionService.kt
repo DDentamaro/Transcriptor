@@ -40,6 +40,11 @@ class TranscriptionService : Service() {
         private const val SEARCH_SAMPLES = 10L * RATE      // cerca il silenzio negli ultimi 10 s
         private const val FRAME = 400                      // 25 ms
         private const val PROMPT_CHARS = 200               // contesto passato al blocco successivo
+        private const val ACTION_BENCH = "it.donato.trascrittore.BENCH"
+        private const val EXTRA_BENCH_LABELS = "benchLabels"
+        private const val EXTRA_BENCH_PATHS = "benchPaths"
+        private const val BENCH_SAMPLES = 60L * RATE       // la prova usa il primo minuto
+        const val PREF_THREADS = "threads"
 
         @Volatile private var cancelRequested = false
 
@@ -51,6 +56,19 @@ class TranscriptionService : Service() {
                 putExtra(EXTRA_MODEL, modelPath)
                 putExtra(EXTRA_LANG, lang)
                 putExtra(EXTRA_TRANSLATE, translate)
+            }
+            ctx.startForegroundService(i)
+        }
+
+        /** Prova velocita: trascrive il primo minuto con ogni modello e numero di thread. */
+        fun startBenchmark(ctx: Context, uri: Uri, lang: String, models: List<ModelInfo>) {
+            val i = Intent(ctx, TranscriptionService::class.java).apply {
+                action = ACTION_BENCH
+                data = uri
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                putExtra(EXTRA_LANG, lang)
+                putExtra(EXTRA_BENCH_LABELS, models.map { it.id }.toTypedArray())
+                putExtra(EXTRA_BENCH_PATHS, models.map { Models.file(ctx, it).path }.toTypedArray())
             }
             ctx.startForegroundService(i)
         }
@@ -77,14 +95,15 @@ class TranscriptionService : Service() {
         if (worker?.isAlive == true) return START_NOT_STICKY
 
         val uri = intent?.data
-        val modelPath = intent?.getStringExtra(EXTRA_MODEL)
+        val bench = intent?.action == ACTION_BENCH
+        val modelPath = if (bench) "" else intent?.getStringExtra(EXTRA_MODEL)
         createChannel()
         startForegroundCompat(buildNotification("Preparazione…", 0, true))
         if (uri == null || modelPath == null) {
             stopSelf()
             return START_NOT_STICKY
         }
-        val name = intent.getStringExtra(EXTRA_NAME) ?: "video"
+        val name = if (bench) "prova-velocita" else intent.getStringExtra(EXTRA_NAME) ?: "video"
         val lang = intent.getStringExtra(EXTRA_LANG) ?: "auto"
         val translate = intent.getBooleanExtra(EXTRA_TRANSLATE, false)
 
@@ -92,6 +111,7 @@ class TranscriptionService : Service() {
         previousText = null
         WhisperLib.nativeSetAbort(false)
         AppState.resetForNewJob(name)
+        AppState.benchmark = bench
         AppState.phase = Phase.DECODING
         AppState.changed()
 
@@ -100,7 +120,13 @@ class TranscriptionService : Service() {
             acquire(12 * 60 * 60 * 1000L)
         }
 
-        worker = Thread({ runJob(uri, name, modelPath, lang, translate) }, "trascrizione").apply { start() }
+        worker = if (bench) {
+            val labels = intent.getStringArrayExtra(EXTRA_BENCH_LABELS).orEmpty()
+            val paths = intent.getStringArrayExtra(EXTRA_BENCH_PATHS).orEmpty()
+            Thread({ runBenchmark(uri, lang, labels.zip(paths)) }, "prova-velocita")
+        } else {
+            Thread({ runJob(uri, name, modelPath, lang, translate) }, "trascrizione")
+        }.apply { start() }
         return START_NOT_STICKY
     }
 
@@ -124,7 +150,8 @@ class TranscriptionService : Service() {
             if (ctx == 0L) throw Exception("Modello non valido o danneggiato: riscaricalo")
 
             // 3) Trascrizione a blocchi
-            val threads = (Runtime.getRuntime().availableProcessors() - 1).coerceIn(1, 4)
+            val threads = getSharedPreferences("prefs", Context.MODE_PRIVATE)
+                .getInt(PREF_THREADS, CpuInfo.defaultThreads())
             val started = SystemClock.elapsedRealtime()
             // Con "auto" la lingua si rileva sul primo blocco e poi resta fissa:
             // rilevarla a ogni blocco la farebbe cambiare a meta video.
@@ -187,11 +214,13 @@ class TranscriptionService : Service() {
                 WhisperLib.nativeFree(ctx)
             }
 
-            val minutes = (SystemClock.elapsedRealtime() - started) / 60_000
+            val elapsedMs = (SystemClock.elapsedRealtime() - started).coerceAtLeast(1)
+            val speed = (total * 1000.0 / RATE) / elapsedMs
             saveResults(name)
             val where = if (AppState.savedLocation.isNotEmpty()) " File salvati in ${AppState.savedLocation}"
                         else " Salvataggio file non riuscito: usa Copia o Condividi."
-            setStatus(Phase.DONE, 1f, "Completata in $minutes min.$where")
+            setStatus(Phase.DONE, 1f,
+                "Completata in ${Exporter.formatClock(elapsedMs)} (${"%.1f".format(speed)}× il tempo reale, $threads thread).$where")
             notifyFinished("Trascrizione completata", name)
         } catch (e: CancelledException) {
             if (AppState.segmentCount() > 0) saveResults(name)
@@ -201,6 +230,97 @@ class TranscriptionService : Service() {
             if (AppState.segmentCount() > 0) saveResults(name)
             setStatus(Phase.ERROR, AppState.progress, "Errore: ${e.message ?: e.toString()}")
             notifyFinished("Trascrizione non riuscita", e.message ?: "")
+        } finally {
+            pcm.delete()
+            try { wakeLock?.takeIf { it.isHeld }?.release() } catch (_: Exception) {}
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
+
+    private fun runBenchmark(uri: Uri, lang: String, models: List<Pair<String, String>>) {
+        val pcm = File(cacheDir, "bench.pcm")
+        val report = StringBuilder()
+        fun line(s: String) {
+            report.append(s).append('\n')
+            AppState.report = report.toString()
+            AppState.changed()
+        }
+        try {
+            setStatus(Phase.DECODING, 0f, "Prova velocità: estrazione del primo minuto…")
+            val total = AudioDecoder.decodeToPcm(this, uri, pcm,
+                onProgress = {}, isCancelled = { cancelRequested }, maxSamples = BENCH_SAMPLES)
+            if (total < 10L * RATE) throw Exception("Il video deve durare almeno 10 secondi")
+            val samples = RandomAccessFile(pcm, "r").use { readFloats(it, 0, total.toInt()) }
+            val audioSec = total.toDouble() / RATE
+
+            if (!WhisperLib.nativeLoadBackends(applicationInfo.nativeLibraryDir)) {
+                throw Exception("Processore non supportato")
+            }
+            line("PROVA VELOCITÀ · ${"%.0f".format(audioSec)} s di audio")
+            line("Processore: ${CpuInfo.describe()}")
+            line("Motore: ${WhisperLib.nativeSystemInfo().substringAfter("CPU :").trim().trimEnd('|').trim()}")
+            line("Velocità = secondi di audio trascritti per secondo di calcolo (più alto è meglio).")
+            line("")
+
+            val threadOptions = CpuInfo.threadCandidates()
+            val noop = object : TranscribeListener {
+                override fun onProgress(progress: Int) {}
+                override fun onSegment(t0Ms: Long, t1Ms: Long, text: ByteArray) {}
+            }
+            // score[t] = somma delle velocita relative (al migliore di ogni modello)
+            val score = HashMap<Int, Double>()
+            val runs = models.size * threadOptions.size
+            var done = 0
+            for ((label, path) in models) {
+                setStatus(Phase.LOADING_MODEL, done.toFloat() / runs, "Prova velocità: caricamento $label…")
+                val loadStart = SystemClock.elapsedRealtime()
+                val ctx = WhisperLib.nativeInit(path)
+                if (ctx == 0L) {
+                    line("$label: modello non caricabile")
+                    done += threadOptions.size
+                    continue
+                }
+                line("$label (caricamento ${"%.1f".format((SystemClock.elapsedRealtime() - loadStart) / 1000.0)} s)")
+                val speeds = HashMap<Int, Double>()
+                try {
+                    for (t in threadOptions) {
+                        if (cancelRequested) throw CancelledException()
+                        setStatus(Phase.TRANSCRIBING, done.toFloat() / runs, "Prova velocità: $label, $t thread…")
+                        val t0 = SystemClock.elapsedRealtime()
+                        val rc = WhisperLib.nativeTranscribe(ctx, samples, lang, "", false, t, noop)
+                        if (rc == WhisperLib.RESULT_ABORTED || cancelRequested) throw CancelledException()
+                        val sec = (SystemClock.elapsedRealtime() - t0).coerceAtLeast(1) / 1000.0
+                        if (rc == WhisperLib.RESULT_OK) {
+                            speeds[t] = audioSec / sec
+                            line("  $t thread: ${"%.1f".format(audioSec / sec)}× (${"%.1f".format(sec)} s)")
+                        } else {
+                            line("  $t thread: errore $rc")
+                        }
+                        done++
+                    }
+                } finally {
+                    WhisperLib.nativeFree(ctx)
+                }
+                val best = speeds.values.maxOrNull() ?: continue
+                for ((t, s) in speeds) score[t] = (score[t] ?: 0.0) + s / best
+                val minutesPerHour = 60.0 / best
+                line("  → un'ora di audio richiede circa ${"%.0f".format(minutesPerHour)} min")
+                line("")
+            }
+
+            val bestThreads = score.maxByOrNull { it.value }?.key
+            if (bestThreads != null) {
+                getSharedPreferences("prefs", Context.MODE_PRIVATE).edit()
+                    .putInt(PREF_THREADS, bestThreads).apply()
+                line("Impostazione scelta: $bestThreads thread (salvata per le prossime trascrizioni).")
+            }
+            line("Per risultati affidabili: telefono freddo, in carica, schermo acceso.")
+            setStatus(Phase.DONE, 1f, "Prova velocità completata.")
+        } catch (e: CancelledException) {
+            setStatus(Phase.CANCELLED, AppState.progress, "Prova velocità annullata.")
+        } catch (e: Throwable) {
+            setStatus(Phase.ERROR, AppState.progress, "Errore: ${e.message ?: e.toString()}")
         } finally {
             pcm.delete()
             try { wakeLock?.takeIf { it.isHeld }?.release() } catch (_: Exception) {}

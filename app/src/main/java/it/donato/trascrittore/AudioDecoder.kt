@@ -28,7 +28,8 @@ object AudioDecoder {
         uri: Uri,
         out: File,
         onProgress: (Float) -> Unit,
-        isCancelled: () -> Boolean
+        isCancelled: () -> Boolean,
+        maxSamples: Long = Long.MAX_VALUE
     ): Long {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
@@ -132,6 +133,7 @@ object AudioDecoder {
                         }
                         dec.releaseOutputBuffer(outIdx, false)
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
+                        if (writer.samplesWritten >= maxSamples) outputDone = true
 
                         if (durationUs > 0 && info.size > 0) {
                             val pct = ((info.presentationTimeUs * 100) / durationUs).toInt().coerceIn(0, 100)
